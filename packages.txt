@@ -1,3 +1,1 @@
-fonts-wqy-microhei
-fonts-wqy-zenhei
-language-pack-zh-hans
+python-3.12.5
