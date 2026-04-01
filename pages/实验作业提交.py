@@ -15,6 +15,8 @@ from scipy import ndimage
 from scipy.signal import convolve2d
 import matplotlib.pyplot as plt
 import warnings
+import re
+import unicodedata
 warnings.filterwarnings('ignore')
 
 # ==================== Supabase 相关导入 ====================
@@ -34,7 +36,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 现代化实验室CSS（增强版）
+# 现代化实验室CSS（增强版）- 保持原有CSS不变
 st.markdown("""
 <style>
 :root {
@@ -632,24 +634,222 @@ section[data-testid="stSidebar"] {
 </style>
 """, unsafe_allow_html=True)
 
+# ==================== 增强的文件名清理工具函数 ====================
+
+def sanitize_filename(filename):
+    """
+    清理文件名，确保只包含ASCII字符，适合Supabase Storage
+    
+    Args:
+        filename: 原始文件名
+    
+    Returns:
+        清理后的安全文件名（只包含字母、数字、点、下划线、连字符）
+    """
+    # 首先，将Unicode字符（包括中文）转换为ASCII表示或删除
+    # 使用NFKD规范化，将Unicode字符分解为基本字符+组合标记
+    normalized = unicodedata.normalize('NFKD', filename)
+    # 只保留ASCII字符，其他都转换为下划线
+    ascii_only = []
+    for char in normalized:
+        if ord(char) < 128:  # ASCII字符
+            ascii_only.append(char)
+        else:
+            # 非ASCII字符（如中文）转换为下划线
+            ascii_only.append('_')
+    
+    safe_name = ''.join(ascii_only)
+    
+    # 替换不安全的字符
+    # 只允许字母、数字、点、下划线、连字符
+    safe_name = re.sub(r'[^\w\s\.\-]', '_', safe_name)
+    # 将空格替换为下划线
+    safe_name = safe_name.replace(' ', '_')
+    # 移除连续的多个下划线
+    safe_name = re.sub(r'_+', '_', safe_name)
+    # 移除开头和结尾的下划线
+    safe_name = safe_name.strip('_')
+    
+    # 如果文件名为空，使用时间戳
+    if not safe_name:
+        safe_name = f"file_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    
+    # 处理文件扩展名
+    # 查找最后一个点，确保有扩展名
+    parts = safe_name.rsplit('.', 1)
+    if len(parts) > 1:
+        base_name = parts[0]
+        ext = parts[1]
+        # 清理扩展名部分，只保留字母和数字
+        ext = re.sub(r'[^a-zA-Z0-9]', '', ext)
+        if ext:
+            # 确保基本名称不为空
+            if not base_name:
+                base_name = f"file_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            safe_name = f"{base_name}.{ext}"
+        else:
+            safe_name = base_name
+    else:
+        safe_name = parts[0]
+    
+    # 再次确保名称不为空
+    if not safe_name:
+        safe_name = f"file_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    
+    return safe_name
+
+def sanitize_path_component(component):
+    """
+    清理路径组件，确保用于构建存储路径的部分是安全的（只包含ASCII字符）
+    
+    Args:
+        component: 路径组件（如用户名、作业ID等）
+    
+    Returns:
+        清理后的安全组件
+    """
+    # 将组件转换为字符串
+    str_component = str(component)
+    
+    # 将Unicode字符转换为ASCII或下划线
+    normalized = unicodedata.normalize('NFKD', str_component)
+    ascii_only = []
+    for char in normalized:
+        if ord(char) < 128:
+            ascii_only.append(char)
+        else:
+            ascii_only.append('_')
+    
+    safe_component = ''.join(ascii_only)
+    
+    # 只保留字母、数字和下划线
+    safe_component = re.sub(r'[^\w]', '_', safe_component)
+    # 移除连续的多个下划线
+    safe_component = re.sub(r'_+', '_', safe_component)
+    # 移除开头和结尾的下划线
+    safe_component = safe_component.strip('_')
+    
+    # 如果为空，返回一个默认值
+    if not safe_component:
+        safe_component = f"component_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    
+    return safe_component
+
+def create_safe_storage_path(username, assignment_id, original_filename):
+    """
+    创建安全的存储路径（只包含ASCII字符）
+    
+    Args:
+        username: 用户名
+        assignment_id: 作业ID
+        original_filename: 原始文件名
+    
+    Returns:
+        安全的存储路径字符串
+    """
+    # 清理各个组件
+    safe_username = sanitize_path_component(username)
+    safe_assignment_id = sanitize_path_component(assignment_id)
+    safe_filename = sanitize_filename(original_filename)
+    
+    # 添加时间戳确保唯一性
+    timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+    
+    # 构建路径：username_assignmentid_timestamp_filename
+    # 使用下划线连接所有部分，确保没有中文字符
+    storage_path = f"{safe_username}_{safe_assignment_id}_{timestamp}_{safe_filename}"
+    
+    # 最后检查一次，确保没有中文字符
+    # 如果还有任何非ASCII字符，全部替换为下划线
+    final_path = []
+    for char in storage_path:
+        if ord(char) < 128:
+            final_path.append(char)
+        else:
+            final_path.append('_')
+    
+    storage_path = ''.join(final_path)
+    
+    # 再次清理可能产生的多个连续下划线
+    storage_path = re.sub(r'_+', '_', storage_path)
+    
+    return storage_path
+
+def validate_ascii_only(text):
+    """
+    验证字符串是否只包含ASCII字符
+    
+    Args:
+        text: 要验证的字符串
+    
+    Returns:
+        (bool, str) - 是否只包含ASCII，以及清理后的字符串
+    """
+    cleaned = []
+    has_non_ascii = False
+    
+    for char in text:
+        if ord(char) < 128:
+            cleaned.append(char)
+        else:
+            cleaned.append('_')
+            has_non_ascii = True
+    
+    cleaned_text = ''.join(cleaned)
+    return not has_non_ascii, cleaned_text
+
 # ==================== Supabase 初始化 ====================
 @st.cache_resource
 def init_supabase():
     """初始化 Supabase 客户端"""
-    url = st.secrets["supabase"]["url"]  # 改为小写
+    url = st.secrets["supabase"]["url"]
     key = st.secrets["supabase"]["key"]
     return create_client(url, key)
 
 supabase = init_supabase()
 
+# ==================== 存储桶名称定义 ====================
+BUCKET_ASSIGNMENTS = "assignment_files"
+BUCKET_EXPERIMENT_CARDS = "experiment_cards"
+BUCKET_TEACHER_MATERIALS = "teacher_materials"
+
+# ==================== 检查并创建存储桶 ====================
+def ensure_storage_buckets():
+    """确保存储桶可用 - 简化版"""
+    required_buckets = [BUCKET_ASSIGNMENTS, BUCKET_EXPERIMENT_CARDS, BUCKET_TEACHER_MATERIALS]
+    
+    for bucket_name in required_buckets:
+        try:
+            # 尝试列出存储桶中的文件（测试访问权限）
+            supabase.storage.from_(bucket_name).list()
+            print(f"存储桶 {bucket_name} 可访问")
+        except Exception as e:
+            # 如果访问失败，尝试创建
+            try:
+                supabase.storage.create_bucket(
+                    bucket_name,
+                    options={
+                        "public": True,
+                        "allowed_mime_types": ["*/*"],
+                        "file_size_limit": 104857600
+                    }
+                )
+                print(f"成功创建存储桶: {bucket_name}")
+            except Exception as create_error:
+                # 静默失败，不显示警告
+                print(f"存储桶 {bucket_name} 不可用: {create_error}")
+
+# 执行存储桶检查
+ensure_storage_buckets()
+
 # ==================== Supabase 表初始化 ====================
 def init_supabase_tables():
     """初始化 Supabase 表结构（如果不存在）"""
     try:
-        # 检查 assignments 表是否存在并创建
+        # 检查 assignments 表是否存在
         try:
             supabase.table("assignments").select("*").limit(1).execute()
-        except:
+        except Exception as e:
             # 表不存在，需要手动在 Supabase SQL 编辑器创建
             st.warning("请在 Supabase SQL 编辑器中执行以下 SQL 创建表：")
             st.code("""
@@ -681,7 +881,8 @@ CREATE TABLE experiment_submissions (
     score INTEGER,
     resubmission_count INTEGER DEFAULT 0,
     allow_view_score BOOLEAN DEFAULT FALSE,
-    assignment_type TEXT DEFAULT 'experiment'
+    assignment_type TEXT DEFAULT 'experiment',
+    file_paths TEXT[] DEFAULT '{}'  -- 存储文件路径数组
 );
             """)
         
@@ -697,10 +898,234 @@ CREATE TABLE experiment_submissions (
 # 执行初始化检查
 init_supabase_tables()
 
-# 创建上传文件存储目录
-UPLOAD_DIR = "assignment_submissions"
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+# ==================== Supabase Storage 文件操作函数 ====================
+
+def upload_file_to_storage(file, bucket_name, storage_path):
+    """上传文件到 Supabase Storage"""
+    try:
+        # 读取文件内容
+        file_bytes = file.getbuffer()
+        
+        # 验证存储路径是否只包含ASCII字符
+        is_ascii, cleaned_path = validate_ascii_only(storage_path)
+        if not is_ascii:
+            print(f"警告：存储路径包含非ASCII字符，已清理: {storage_path} -> {cleaned_path}")
+            storage_path = cleaned_path
+        
+        print(f"最终存储路径: {storage_path}")
+        
+        # 上传到 Storage
+        response = supabase.storage.from_(bucket_name).upload(
+            path=storage_path,
+            file=file_bytes.tobytes(),
+            file_options={"content-type": file.type if file.type else "application/octet-stream"}
+        )
+        
+        # 获取公共URL
+        public_url = supabase.storage.from_(bucket_name).get_public_url(storage_path)
+        return True, public_url, storage_path
+    except Exception as e:
+        error_msg = str(e)
+        print(f"上传失败详细错误: {error_msg}")
+        return False, error_msg, None
+
+def download_file_from_storage(bucket_name, storage_path):
+    """从 Supabase Storage 下载文件"""
+    try:
+        file_data = supabase.storage.from_(bucket_name).download(storage_path)
+        return True, file_data
+    except Exception as e:
+        return False, str(e)
+
+def delete_file_from_storage(bucket_name, storage_path):
+    """从 Supabase Storage 删除文件"""
+    try:
+        supabase.storage.from_(bucket_name).remove([storage_path])
+        return True, "删除成功"
+    except Exception as e:
+        return False, str(e)
+
+def list_files_in_storage(bucket_name, folder_path):
+    """列出存储桶中的文件"""
+    try:
+        files = supabase.storage.from_(bucket_name).list(folder_path)
+        return True, files
+    except Exception as e:
+        return False, str(e)
+
+def save_uploaded_files_to_storage(uploaded_files, student_username, assignment_id):
+    """保存上传的文件到 Supabase Storage"""
+    saved_files = []
+    file_paths = []
+    public_urls = []
+    
+    if uploaded_files:
+        for uploaded_file in uploaded_files:
+            # 使用安全路径创建函数生成存储路径
+            storage_path = create_safe_storage_path(
+                student_username, 
+                assignment_id, 
+                uploaded_file.name
+            )
+            
+            print(f"上传文件: {uploaded_file.name}")
+            print(f"原始文件名中的字符: {[ord(c) for c in uploaded_file.name]}")
+            print(f"生成的存储路径: {storage_path}")
+            
+            # 上传文件
+            success, result, path = upload_file_to_storage(
+                uploaded_file, 
+                BUCKET_ASSIGNMENTS, 
+                storage_path
+            )
+            
+            if success:
+                saved_files.append(uploaded_file.name)
+                file_paths.append(storage_path)
+                public_urls.append(result)
+                print(f"文件已上传: {storage_path}")
+            else:
+                st.error(f"文件 {uploaded_file.name} 上传失败: {result}")
+                print(f"上传失败详情: {result}")
+    
+    return saved_files, file_paths, public_urls
+
+def save_teacher_files_to_storage(uploaded_files, teacher_username, assignment_id, file_type="experiment_cards"):
+    """保存教师上传的文件到 Supabase Storage"""
+    saved_files = []
+    file_paths = []
+    public_urls = []
+    
+    bucket_name = BUCKET_EXPERIMENT_CARDS if file_type == "experiment_cards" else BUCKET_TEACHER_MATERIALS
+    
+    if uploaded_files:
+        for uploaded_file in uploaded_files:
+            # 使用安全路径创建函数生成存储路径
+            storage_path = create_safe_storage_path(
+                teacher_username, 
+                assignment_id, 
+                uploaded_file.name
+            )
+            
+            print(f"上传文件: {uploaded_file.name}")
+            print(f"生成的存储路径: {storage_path}")
+            
+            success, result, path = upload_file_to_storage(
+                uploaded_file, 
+                bucket_name, 
+                storage_path
+            )
+            
+            if success:
+                saved_files.append(uploaded_file.name)
+                file_paths.append(storage_path)
+                public_urls.append(result)
+                print(f"文件上传成功: {storage_path}")
+            else:
+                st.error(f"文件 {uploaded_file.name} 上传失败: {result}")
+                print(f"上传失败详情: {result}")
+    
+    return saved_files, file_paths, public_urls
+
+def download_assignment_files_as_zip(student_username, assignment_id, file_paths):
+    """从 Storage 下载文件并打包成 ZIP"""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_zip:
+            zip_path = tmp_zip.name
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.filename_encoding = 'utf-8'
+            
+            for i, storage_path in enumerate(file_paths):
+                # 从 Storage 下载文件
+                success, file_data = download_file_from_storage(BUCKET_ASSIGNMENTS, storage_path)
+                
+                if success:
+                    # 获取原始文件名（从存储路径中提取）
+                    original_filename = storage_path.split('_')[-1] if '_' in storage_path else f"file_{i+1}"
+                    
+                    # 写入 zip
+                    zipf.writestr(original_filename, file_data)
+        
+        if os.path.getsize(zip_path) == 0:
+            st.error("创建的压缩包为空")
+            os.remove(zip_path)
+            return None
+            
+        return zip_path
+    except Exception as e:
+        st.error(f"创建压缩包失败: {str(e)}")
+        if 'zip_path' in locals() and os.path.exists(zip_path):
+            os.remove(zip_path)
+        return None
+
+def download_teacher_files_as_zip(teacher_username, assignment_id, file_paths, bucket_name="experiment_cards"):
+    """下载教师文件并打包成 ZIP"""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_zip:
+            zip_path = tmp_zip.name
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.filename_encoding = 'utf-8'
+            
+            for i, storage_path in enumerate(file_paths):
+                success, file_data = download_file_from_storage(bucket_name, storage_path)
+                
+                if success:
+                    original_filename = storage_path.split('_')[-1] if '_' in storage_path else f"file_{i+1}"
+                    zipf.writestr(original_filename, file_data)
+        
+        return zip_path
+    except Exception as e:
+        st.error(f"创建压缩包失败: {str(e)}")
+        return None
+
+def get_file_preview_from_storage(storage_path, bucket_name=BUCKET_ASSIGNMENTS):
+    """从 Storage 获取文件预览"""
+    try:
+        success, file_data = download_file_from_storage(bucket_name, storage_path)
+        
+        if not success:
+            return None, f"文件下载失败: {file_data}"
+        
+        # 确定文件类型
+        file_ext = os.path.splitext(storage_path)[1].lower()
+        
+        # 图像文件
+        if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
+            try:
+                image = Image.open(io.BytesIO(file_data))
+                return image, "image"
+            except Exception as e:
+                return f"图片预览失败: {str(e)}", "info"
+        
+        # 文本文件
+        elif file_ext in ['.txt', '.py', '.java', '.cpp', '.c', '.h', '.html', '.css', '.js', '.md', '.json', '.xml']:
+            try:
+                # 尝试多种编码
+                encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+                for encoding in encodings:
+                    try:
+                        content = file_data.decode(encoding)
+                        if len(content) > 10000:
+                            content = content[:10000] + "\n\n... (文件较大，仅显示前10000字符)"
+                        return content, "text"
+                    except UnicodeDecodeError:
+                        continue
+                return f"无法解码文本文件，文件大小: {len(file_data)} 字节", "info"
+            except Exception as e:
+                return f"文本预览失败: {str(e)}", "info"
+        
+        # PDF文件
+        elif file_ext == '.pdf':
+            return f"PDF文档\n大小: {len(file_data)} 字节\n请下载查看完整内容", "info"
+        
+        # 其他文件
+        else:
+            return f"文件类型: {file_ext}\n大小: {len(file_data)} 字节", "info"
+            
+    except Exception as e:
+        return None, f"预览失败: {str(e)}"
 
 # ==================== 工具函数 ====================
 def get_beijing_time():
@@ -711,41 +1136,36 @@ def get_beijing_time():
 def send_file_to_email(uploaded_files, username, assignment_name):
     """
     发送用户上传的文件到你的邮箱
-    参数说明：
-    - uploaded_files: Streamlit上传的文件对象列表（st.file_uploader返回的结果）
-    - username: 提交用户的姓名/学号（便于你区分）
-    - assignment_name: 作业/实验名称（便于你分类）
     """
     # 从Secrets读取邮箱配置
     MY_EMAIL = st.secrets["EMAIL"]["address"]
     MY_PWD = st.secrets["EMAIL"]["password"]
-    SMTP_SERVER = "smtp.qq.com"  # QQ邮箱用这个，163邮箱替换为smtp.163.com
+    SMTP_SERVER = "smtp.qq.com"
     SMTP_PORT = 465
 
-    # 构建邮件内容
-    msg = MIMEMultipart()
-    msg['From'] = formataddr(("作业提交系统", MY_EMAIL))
-    msg['To'] = MY_EMAIL
-    msg['Subject'] = f"[{username}] 提交{assignment_name}作业"
-
-    # 添加上传的文件作为邮件附件
-    for file in uploaded_files:
-        part = MIMEBase('application', 'octet-stream')
-        part.set_payload(file.getbuffer())
-        encoders.encode_base64(part)
-        part.add_header('Content-Disposition', f'attachment; filename="{file.name}"')
-        msg.attach(part)
-
-    # 发送邮件
     try:
+        # 构建邮件内容
+        msg = MIMEMultipart()
+        msg['From'] = formataddr(("作业提交系统", MY_EMAIL))
+        msg['To'] = MY_EMAIL
+        msg['Subject'] = f"[{username}] 提交{assignment_name}作业"
+
+        # 添加上传的文件作为邮件附件
+        for file in uploaded_files:
+            part = MIMEBase('application', 'octet-stream')
+            part.set_payload(file.getbuffer())
+            encoders.encode_base64(part)
+            part.add_header('Content-Disposition', f'attachment; filename="{file.name}"')
+            msg.attach(part)
+
+        # 发送邮件
         server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
         server.login(MY_EMAIL, MY_PWD)
         server.sendmail(MY_EMAIL, [MY_EMAIL], msg.as_string())
         server.quit()
-        return True
+        return True, "邮件发送成功"
     except Exception as e:
-        st.error(f"文件提交失败！错误原因：{str(e)}")
-        return False
+        return False, f"邮件发送失败: {str(e)}"
 
 def init_default_assignments():
     """初始化默认作业到 Supabase"""
@@ -806,88 +1226,6 @@ def init_default_assignments():
 # 初始化默认作业
 init_default_assignments()
 
-def save_uploaded_files(uploaded_files, student_username, assignment_id):
-    """保存上传的文件"""
-    saved_files = []
-    if uploaded_files:
-        student_dir = os.path.join(UPLOAD_DIR, student_username)
-        assignment_dir = os.path.join(student_dir, str(assignment_id))
-        
-        if not os.path.exists(assignment_dir):
-            os.makedirs(assignment_dir)
-        
-        for uploaded_file in uploaded_files:
-            safe_filename = "".join(c for c in uploaded_file.name if c.isalnum() or c in "._- ").rstrip()
-            file_path = os.path.join(assignment_dir, safe_filename)
-            
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            saved_files.append(safe_filename)
-    
-    return saved_files
-
-def save_teacher_experiment_card_files(teacher_username, assignment_id, uploaded_files):
-    """保存教师上传的实验卡附件"""
-    saved_files = []
-    if uploaded_files:
-        teacher_dir = os.path.join(UPLOAD_DIR, "teachers", teacher_username)
-        assignment_dir = os.path.join(teacher_dir, str(assignment_id))
-        
-        if not os.path.exists(assignment_dir):
-            os.makedirs(assignment_dir)
-        
-        for uploaded_file in uploaded_files:
-            safe_filename = "".join(c for c in uploaded_file.name if c.isalnum() or c in "._- ").rstrip()
-            file_path = os.path.join(assignment_dir, safe_filename)
-            
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            saved_files.append(safe_filename)
-    
-    return saved_files
-
-def download_experiment_card(assignment_id):
-    """下载实验卡 - 修复版本，解决中文编码问题"""
-    try:
-        response = supabase.table("assignments").select("experiment_card, teacher_username, assignment_number").eq("id", assignment_id).execute()
-        
-        if not response.data or len(response.data) == 0 or not response.data[0].get("experiment_card"):
-            return None, "找不到实验卡内容"
-            
-        card_data = response.data[0]
-        card_content = card_data.get("experiment_card", "")
-        teacher_username = card_data.get("teacher_username", "")
-        assignment_number = card_data.get("assignment_number", "")
-        
-        temp_dir = tempfile.mkdtemp()
-        
-        zip_filename = f"实验卡_实验{assignment_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}.zip"
-        zip_path = os.path.join(temp_dir, zip_filename)
-        
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            zipf.filename_encoding = 'utf-8'
-            
-            card_filename = f"实验{assignment_number}_实验卡内容.txt"
-            card_path = os.path.join(temp_dir, card_filename)
-            
-            with open(card_path, "w", encoding="utf-8") as f:
-                f.write(card_content)
-            
-            zipf.write(card_path, card_filename)
-            
-            if teacher_username:
-                teacher_dir = os.path.join(UPLOAD_DIR, "teachers", teacher_username, str(assignment_id))
-                if os.path.exists(teacher_dir):
-                    for root, dirs, files in os.walk(teacher_dir):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            arcname = os.path.join("附件", file)
-                            zipf.write(file_path, arcname)
-        
-        return zip_path, None
-    except Exception as e:
-        return None, f"下载失败：{str(e)}"
-
 def get_assignment_by_id(assignment_id):
     """通过ID获取作业信息"""
     try:
@@ -907,55 +1245,6 @@ def get_assignments_by_type(assignment_type):
     except Exception as e:
         st.error(f"获取作业列表失败：{str(e)}")
         return []
-
-def get_assignment_files_with_paths(student_username, assignment_id):
-    """获取作业文件列表及完整路径"""
-    assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-    file_info = []
-    
-    if os.path.exists(assignment_dir):
-        for root, dirs, files in os.walk(assignment_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
-                rel_path = os.path.relpath(file_path, assignment_dir)
-                file_size = os.path.getsize(file_path)
-                modified_time = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
-                
-                file_info.append({
-                    'name': file,
-                    'path': file_path,
-                    'relative_path': rel_path,
-                    'size': file_size,
-                    'modified': modified_time
-                })
-    
-    return file_info
-
-def get_assignment_files(student_username, assignment_id):
-    """获取作业文件列表"""
-    assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-    if os.path.exists(assignment_dir):
-        return os.listdir(assignment_dir)
-    return []
-
-def create_zip_file(student_username, assignment_id):
-    """创建包含所有提交文件的ZIP包，修复中文文件名编码问题"""
-    assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-    if os.path.exists(assignment_dir):
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_zip:
-            zip_filename = tmp_zip.name
-        
-        with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED, compresslevel=5) as zipf:
-            zipf.filename_encoding = 'utf-8'
-            
-            for root, dirs, files in os.walk(assignment_dir):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, os.path.dirname(assignment_dir))
-                    zipf.write(file_path, arcname)
-        
-        return zip_filename
-    return None
 
 def get_all_assignments():
     """获取所有作业"""
@@ -1011,7 +1300,7 @@ def get_student_submissions(student_username, assignment_type=None):
         return []
 
 def submit_assignment(student_username, student_name, assignment_id, assignment_type, content, uploaded_files):
-    """提交作业"""
+    """提交作业 - 使用 Storage 保存文件"""
     try:
         assignment = get_assignment_by_id(assignment_id)
         if not assignment:
@@ -1021,24 +1310,35 @@ def submit_assignment(student_username, student_name, assignment_id, assignment_
         assignment_title = assignment.get("title")
         
         # 检查是否已有提交
-        response = supabase.table("experiment_submissions").select("id, resubmission_count").eq("student_username", student_username).eq("experiment_number", assignment_number).eq("assignment_type", assignment_type).execute()
+        response = supabase.table("experiment_submissions").select("id, resubmission_count, file_paths").eq("student_username", student_username).eq("experiment_number", assignment_number).eq("assignment_type", assignment_type).execute()
         existing = response.data if response.data else []
         
         submission_time = get_beijing_time().strftime('%Y-%m-%d %H:%M:%S')
         
-        saved_files = save_uploaded_files(uploaded_files, student_username, assignment_id)
+        # 保存文件到 Storage
+        saved_files, file_paths, public_urls = save_uploaded_files_to_storage(
+            uploaded_files, student_username, assignment_id
+        )
+        
         file_names_str = ','.join(saved_files) if saved_files else ''
         
         if existing:
             submission_id = existing[0]["id"]
             resubmission_count = existing[0]["resubmission_count"] + 1
             
+            # 获取原有的文件路径
+            old_file_paths = existing[0].get("file_paths", [])
+            
+            # 合并新旧文件路径
+            all_file_paths = old_file_paths + file_paths if old_file_paths else file_paths
+            
             supabase.table("experiment_submissions").update({
                 "submission_content": content + "\n\n提交文件: " + file_names_str,
                 "submission_time": submission_time,
                 "status": "pending",
                 "resubmission_count": resubmission_count,
-                "assignment_type": assignment_type
+                "assignment_type": assignment_type,
+                "file_paths": all_file_paths
             }).eq("id", submission_id).execute()
             
             message = f"作业重新提交成功！这是第{resubmission_count}次提交"
@@ -1052,7 +1352,8 @@ def submit_assignment(student_username, student_name, assignment_id, assignment_
                 "status": "pending",
                 "resubmission_count": 0,
                 "assignment_type": assignment_type,
-                "allow_view_score": False
+                "allow_view_score": False,
+                "file_paths": file_paths
             }).execute()
             
             submission_id = insert_response.data[0]["id"] if insert_response.data else None
@@ -1173,15 +1474,20 @@ def get_experiment_description(experiment_number):
     return descriptions.get(experiment_number, "")
 
 def save_experiment_card(assignment_id, teacher_username, card_content, uploaded_files):
-    """保存实验卡"""
+    """保存实验卡 - 使用 Storage"""
     try:
         saved_files = []
+        file_paths = []
+        
         if uploaded_files:
-            saved_files = save_teacher_experiment_card_files(teacher_username, assignment_id, uploaded_files)
+            saved_files, file_paths, _ = save_teacher_files_to_storage(
+                uploaded_files, teacher_username, assignment_id, "experiment_cards"
+            )
         
         experiment_card_content = card_content
         if saved_files:
             experiment_card_content += "\n\n附件文件: " + ', '.join(saved_files)
+            experiment_card_content += "\n\n文件路径: " + ', '.join(file_paths)
         
         supabase.table("assignments").update({
             "teacher_username": teacher_username,
@@ -1193,29 +1499,20 @@ def save_experiment_card(assignment_id, teacher_username, card_content, uploaded
         return False, f"上传失败：{str(e)}"
 
 def save_experiment_materials(assignment_id, teacher_username, materials_content, uploaded_files):
-    """保存实验文档/资料"""
+    """保存实验文档/资料 - 使用 Storage"""
     try:
         saved_files = []
+        file_paths = []
+        
         if uploaded_files:
-            teacher_dir = os.path.join(UPLOAD_DIR, "teachers", teacher_username, "materials")
-            if not os.path.exists(teacher_dir):
-                os.makedirs(teacher_dir)
-            
-            assignment_dir = os.path.join(teacher_dir, str(assignment_id))
-            if not os.path.exists(assignment_dir):
-                os.makedirs(assignment_dir)
-            
-            for uploaded_file in uploaded_files:
-                safe_filename = "".join(c for c in uploaded_file.name if c.isalnum() or c in "._- ").rstrip()
-                file_path = os.path.join(assignment_dir, safe_filename)
-                
-                with open(file_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                saved_files.append(safe_filename)
+            saved_files, file_paths, _ = save_teacher_files_to_storage(
+                uploaded_files, teacher_username, assignment_id, "teacher_materials"
+            )
         
         experiment_materials_content = materials_content
         if saved_files:
             experiment_materials_content += "\n\n附件文件: " + ', '.join(saved_files)
+            experiment_materials_content += "\n\n文件路径: " + ', '.join(file_paths)
         
         supabase.table("assignments").update({
             "teacher_username": teacher_username,
@@ -1237,17 +1534,57 @@ def get_experiment_materials(assignment_id):
         st.error(f"获取实验文档失败：{str(e)}")
         return ""
 
-def download_student_files(student_username, assignment_id):
-    """下载学生提交的文件，修复中文编码问题"""
-    if not student_username or not assignment_id:
-        st.error("缺少必要参数：学生用户名和作业ID")
-        return None
+def download_experiment_card(assignment_id):
+    """下载实验卡 - 从 Storage 下载"""
+    try:
+        response = supabase.table("assignments").select("experiment_card, teacher_username, assignment_number").eq("id", assignment_id).execute()
         
-    assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-    if not os.path.exists(assignment_dir):
-        st.error(f"文件路径不存在: {assignment_dir}")
-        return None
+        if not response.data or len(response.data) == 0:
+            return None, "找不到实验卡内容"
+            
+        card_data = response.data[0]
+        card_content = card_data.get("experiment_card", "")
+        teacher_username = card_data.get("teacher_username", "")
+        assignment_number = card_data.get("assignment_number", "")
         
+        temp_dir = tempfile.mkdtemp()
+        
+        zip_filename = f"实验卡_实验{assignment_number}_{datetime.now().strftime('%Y%m%d%H%M%S')}.zip"
+        zip_path = os.path.join(temp_dir, zip_filename)
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.filename_encoding = 'utf-8'
+            
+            # 添加实验卡内容
+            card_filename = f"实验{assignment_number}_实验卡内容.txt"
+            card_path = os.path.join(temp_dir, card_filename)
+            
+            with open(card_path, "w", encoding="utf-8") as f:
+                f.write(card_content)
+            
+            zipf.write(card_path, card_filename)
+            
+            # 解析文件路径并下载附件
+            if "文件路径:" in card_content:
+                file_paths_part = card_content.split("文件路径:")[-1].strip().split(',')
+                for storage_path in file_paths_part:
+                    storage_path = storage_path.strip()
+                    if storage_path:
+                        success, file_data = download_file_from_storage(BUCKET_EXPERIMENT_CARDS, storage_path)
+                        if success:
+                            original_filename = storage_path.split('_')[-1] if '_' in storage_path else f"file_{i+1}"
+                            zipf.writestr(os.path.join("附件", original_filename), file_data)
+        
+        return zip_path, None
+    except Exception as e:
+        return None, f"下载失败：{str(e)}"
+
+def download_student_files(student_username, assignment_id, file_paths):
+    """下载学生提交的文件"""
+    if not student_username or not assignment_id or not file_paths:
+        st.error("缺少必要参数")
+        return None
+    
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_zip:
             zip_path = tmp_zip.name
@@ -1255,14 +1592,16 @@ def download_student_files(student_username, assignment_id):
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             zipf.filename_encoding = 'utf-8'
             
-            for root, dirs, files in os.walk(assignment_dir):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, os.path.dirname(assignment_dir))
-                    zipf.write(file_path, arcname)
+            for i, storage_path in enumerate(file_paths):
+                success, file_data = download_file_from_storage(BUCKET_ASSIGNMENTS, storage_path)
+                
+                if success:
+                    # 从存储路径提取原始文件名
+                    original_filename = storage_path.split('_')[-1] if '_' in storage_path else f"file_{i+1}"
+                    zipf.writestr(original_filename, file_data)
         
         if os.path.getsize(zip_path) == 0:
-            st.error("创建的压缩包为空，请检查源文件")
+            st.error("创建的压缩包为空")
             os.remove(zip_path)
             return None
             
@@ -1273,58 +1612,23 @@ def download_student_files(student_username, assignment_id):
             os.remove(zip_path)
         return None
 
-def preview_file(file_path):
-    """预览文件内容"""
-    if not os.path.exists(file_path):
-        return None, "文件不存在"
-    
-    try:
-        file_ext = os.path.splitext(file_path)[1].lower()
-        
-        if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
-            image = Image.open(file_path)
-            return image, "image"
-        
-        elif file_ext in ['.txt', '.py', '.java', '.cpp', '.c', '.html', '.css', '.js', '.md']:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-            return content, "text"
-        
-        elif file_ext in ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx']:
-            file_size = os.path.getsize(file_path)
-            return f"文档文件: {os.path.basename(file_path)}\n大小: {file_size} 字节\n类型: {file_ext[1:].upper()}", "info"
-        
-        elif file_ext in ['.zip', '.rar', '.7z']:
-            return f"压缩文件: {os.path.basename(file_path)}\n包含多个文件", "info"
-        
-        else:
-            return f"不支持预览的文件类型: {file_ext}", "info"
-            
-    except Exception as e:
-        return None, f"预览失败: {str(e)}"
-
 def download_single_submission(submission_id, student_username, assignment_type, assignment_number):
     """下载单次提交的文件"""
     try:
+        # 获取提交记录
+        response = supabase.table("experiment_submissions").select("file_paths").eq("id", submission_id).execute()
+        if not response.data or len(response.data) == 0:
+            return None, None, "找不到提交记录"
+        
+        file_paths = response.data[0].get("file_paths", [])
+        
         assignment_id = get_assignment_id_by_type_and_number(assignment_type, assignment_number)
         if not assignment_id:
             return None, None, "找不到对应的作业"
         
-        assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-        if not os.path.exists(assignment_dir):
+        zip_path = download_student_files(student_username, assignment_id, file_paths)
+        if not zip_path:
             return None, None, "没有找到提交的文件"
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_zip:
-            zip_path = tmp_zip.name
-        
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            zipf.filename_encoding = 'utf-8'
-            
-            for root, dirs, files in os.walk(assignment_dir):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, os.path.dirname(assignment_dir))
-                    zipf.write(file_path, arcname)
         
         filename = f"{student_username}_{assignment_type}_{assignment_number}_submission_{submission_id}.zip"
         return zip_path, filename, None
@@ -1629,7 +1933,7 @@ def export_all_scores_to_excel(student_filter=None):
     except Exception as e:
         return None, f"导出失败：{str(e)}"
 
-# 渲染侧边栏
+# ==================== 渲染侧边栏 ====================
 def render_sidebar():
     with st.sidebar:
         st.markdown("""
@@ -1726,11 +2030,11 @@ def render_sidebar():
         st.markdown("**📊 系统信息**")
         st.text(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         st.text("状态: 🟢 正常运行")
-        st.text("版本: v2.1.0 (Supabase)")
+        st.text("版本: v3.0.0 (Supabase Storage with enhanced sanitization)")
 
 render_sidebar()
 
-# 检查登录状态
+# ==================== 检查登录状态 ====================
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'username' not in st.session_state:
@@ -1767,6 +2071,7 @@ else:
     
     tab1, tab2, tab3, tab4 = st.tabs(["🧪 实验作业", "📊 期中作业", "🎓 期末作业", "👨‍🏫 教师管理"])
     
+    # 实验作业选项卡
     with tab1:
         st.markdown("### 📚 实验卡资源")
         assignments = get_assignments_by_type('experiment')
@@ -1803,11 +2108,8 @@ else:
                                             use_container_width=True
                                         )
                                     try:
-                                        temp_dir = os.path.dirname(zip_path)
-                                        if os.path.exists(zip_path):
-                                            os.remove(zip_path)
-                                        if os.path.exists(temp_dir):
-                                            shutil.rmtree(temp_dir)
+                                        os.remove(zip_path)
+                                        shutil.rmtree(os.path.dirname(zip_path))
                                     except:
                                         pass
                                 elif error:
@@ -1997,6 +2299,7 @@ else:
                         score = sub.get("score")
                         resubmission_count = sub.get("resubmission_count", 0)
                         allow_view_score = sub.get("allow_view_score", False)
+                        file_paths = sub.get("file_paths", [])
                         
                         status_info = {
                             'pending': ('⏳ 待批改', 'status-pending'),
@@ -2022,7 +2325,7 @@ else:
                                                 files.append(filename.strip())
                                                 st.markdown(f"- {filename}")
                                         
-                                        if files:
+                                        if files and file_paths:
                                             assignment_id = None
                                             assignments = get_assignment_by_type('experiment')
                                             for assignment in assignments:
@@ -2031,7 +2334,7 @@ else:
                                                     break
                                             
                                             if assignment_id:
-                                                zip_path = download_student_files(student_username, assignment_id)
+                                                zip_path = download_student_files(student_username, assignment_id, file_paths)
                                                 if zip_path and os.path.exists(zip_path):
                                                     with open(zip_path, "rb") as f:
                                                         zip_data = f.read()
@@ -2045,32 +2348,28 @@ else:
                                                         )
                                                 
                                                 st.markdown("**🔍 文件预览:**")
-                                                assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-                                                if os.path.exists(assignment_dir):
-                                                    for file_idx, filename in enumerate(files):
-                                                        file_path = os.path.join(assignment_dir, filename)
-                                                        if os.path.exists(file_path):
-                                                            file_preview_col1, file_preview_col2 = st.columns([3, 1])
-                                                            with file_preview_col1:
-                                                                with st.expander(f"📄 {filename}", expanded=False):
-                                                                    preview_result, preview_type = preview_file(file_path)
-                                                                    if preview_result:
-                                                                        if preview_type == "image":
-                                                                            st.image(preview_result, caption=filename)
-                                                                        elif preview_type == "text":
-                                                                            st.code(preview_result, language='text')
-                                                                        else:
-                                                                            st.info(preview_result)
-                                                            with file_preview_col2:
-                                                                with open(file_path, "rb") as f:
-                                                                    file_data = f.read()
-                                                                    st.download_button(
-                                                                        label="📥 下载",
-                                                                        data=file_data,
-                                                                        file_name=filename,
-                                                                        mime="application/octet-stream",
-                                                                        key=f"single_file_{submission_id}_{experiment_number}_{file_idx}"
-                                                                    )
+                                                for file_idx, (filename, storage_path) in enumerate(zip(files, file_paths)):
+                                                    file_preview_col1, file_preview_col2 = st.columns([3, 1])
+                                                    with file_preview_col1:
+                                                        with st.expander(f"📄 {filename}", expanded=False):
+                                                            preview_result, preview_type = get_file_preview_from_storage(storage_path)
+                                                            if preview_result:
+                                                                if preview_type == "image":
+                                                                    st.image(preview_result, caption=filename)
+                                                                elif preview_type == "text":
+                                                                    st.code(preview_result, language='text')
+                                                                else:
+                                                                    st.info(preview_result)
+                                                    with file_preview_col2:
+                                                        success, file_data = download_file_from_storage(BUCKET_ASSIGNMENTS, storage_path)
+                                                        if success:
+                                                            st.download_button(
+                                                                label="📥 下载",
+                                                                data=file_data,
+                                                                file_name=filename,
+                                                                mime="application/octet-stream",
+                                                                key=f"single_file_{submission_id}_{experiment_number}_{file_idx}"
+                                                            )
                                 
                                 if status == 'graded' and allow_view_score and score is not None:
                                     score_color = "#10b981" if score >= 80 else "#f59e0b" if score >= 60 else "#ef4444"
@@ -2118,19 +2417,13 @@ else:
                                 if status == 'pending':
                                     if st.button("撤回", key=f"withdraw_{submission_id}_{experiment_number}_{sub_idx}", use_container_width=True):
                                         try:
+                                            # 获取文件路径并删除
+                                            sub_data = supabase.table("experiment_submissions").select("file_paths").eq("id", submission_id).execute()
+                                            if sub_data.data and sub_data.data[0].get("file_paths"):
+                                                for fp in sub_data.data[0]["file_paths"]:
+                                                    delete_file_from_storage(BUCKET_ASSIGNMENTS, fp)
+                                            
                                             supabase.table("experiment_submissions").delete().eq("id", submission_id).eq("student_username", st.session_state.username).execute()
-                                            
-                                            assignments = get_assignment_by_type('experiment')
-                                            assignment_id = None
-                                            for assignment in assignments:
-                                                if assignment.get("assignment_number") == experiment_number:
-                                                    assignment_id = assignment.get("id")
-                                                    break
-                                            
-                                            if assignment_id:
-                                                assignment_dir = os.path.join(UPLOAD_DIR, st.session_state.username, str(assignment_id))
-                                                if os.path.exists(assignment_dir):
-                                                    shutil.rmtree(assignment_dir)
                                             
                                             st.success("提交已撤回！")
                                             st.rerun()
@@ -2236,11 +2529,8 @@ else:
                                                 use_container_width=True
                                             )
                                         try:
-                                            temp_dir = os.path.dirname(zip_path)
-                                            if os.path.exists(zip_path):
-                                                os.remove(zip_path)
-                                            if os.path.exists(temp_dir):
-                                                shutil.rmtree(temp_dir)
+                                            os.remove(zip_path)
+                                            shutil.rmtree(os.path.dirname(zip_path))
                                         except:
                                             pass
                                     elif error:
@@ -2320,6 +2610,7 @@ else:
                     score = sub.get("score")
                     resubmission_count = sub.get("resubmission_count", 0)
                     allow_view_score = sub.get("allow_view_score", False)
+                    file_paths = sub.get("file_paths", [])
                     
                     status_info = {
                         'pending': ('⏳ 待批改', 'status-pending'),
@@ -2349,10 +2640,10 @@ else:
                                             files.append(filename.strip())
                                             st.markdown(f"- {filename}")
                                     
-                                    if files:
+                                    if files and file_paths:
                                         assignment_id = get_assignment_id_by_type_and_number('experiment', experiment_number)
                                         if assignment_id:
-                                            zip_path = download_student_files(student_username, assignment_id)
+                                            zip_path = download_student_files(student_username, assignment_id, file_paths)
                                             if zip_path and os.path.exists(zip_path):
                                                 with open(zip_path, "rb") as f:
                                                     zip_data = f.read()
@@ -2366,32 +2657,28 @@ else:
                                                     )
                                             
                                             st.markdown("**🔍 文件预览:**")
-                                            assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-                                            if os.path.exists(assignment_dir):
-                                                for file_idx, filename in enumerate(files):
-                                                    file_path = os.path.join(assignment_dir, filename)
-                                                    if os.path.exists(file_path):
-                                                        file_preview_col1, file_preview_col2 = st.columns([3, 1])
-                                                        with file_preview_col1:
-                                                            with st.expander(f"📄 {filename}", expanded=False):
-                                                                preview_result, preview_type = preview_file(file_path)
-                                                                if preview_result:
-                                                                    if preview_type == "image":
-                                                                        st.image(preview_result, caption=filename)
-                                                                    elif preview_type == "text":
-                                                                        st.code(preview_result, language='python' if filename.endswith('.py') else 'text')
-                                                                    else:
-                                                                        st.info(preview_result)
-                                                        with file_preview_col2:
-                                                            with open(file_path, "rb") as f:
-                                                                file_data = f.read()
-                                                                st.download_button(
-                                                                    label="📥 单独下载",
-                                                                    data=file_data,
-                                                                    file_name=filename,
-                                                                    mime="application/octet-stream",
-                                                                    key=f"teacher_single_file_{submission_id}_{experiment_number}_{student_username}_{file_idx}"
-                                                                )
+                                            for file_idx, (filename, storage_path) in enumerate(zip(files, file_paths)):
+                                                file_preview_col1, file_preview_col2 = st.columns([3, 1])
+                                                with file_preview_col1:
+                                                    with st.expander(f"📄 {filename}", expanded=False):
+                                                        preview_result, preview_type = get_file_preview_from_storage(storage_path)
+                                                        if preview_result:
+                                                            if preview_type == "image":
+                                                                st.image(preview_result, caption=filename)
+                                                            elif preview_type == "text":
+                                                                st.code(preview_result, language='python' if filename.endswith('.py') else 'text')
+                                                            else:
+                                                                st.info(preview_result)
+                                                with file_preview_col2:
+                                                    success, file_data = download_file_from_storage(BUCKET_ASSIGNMENTS, storage_path)
+                                                    if success:
+                                                        st.download_button(
+                                                            label="📥 单独下载",
+                                                            data=file_data,
+                                                            file_name=filename,
+                                                            mime="application/octet-stream",
+                                                            key=f"teacher_single_file_{submission_id}_{experiment_number}_{student_username}_{file_idx}"
+                                                        )
                             
                             if status == 'graded' and score is not None:
                                 st.markdown(f"""
@@ -2487,11 +2774,8 @@ else:
                                             use_container_width=True
                                         )
                                     try:
-                                        temp_dir = os.path.dirname(zip_path)
-                                        if os.path.exists(zip_path):
-                                            os.remove(zip_path)
-                                        if os.path.exists(temp_dir):
-                                            shutil.rmtree(temp_dir)
+                                        os.remove(zip_path)
+                                        shutil.rmtree(os.path.dirname(zip_path))
                                     except:
                                         pass
                                 elif error:
@@ -2601,6 +2885,7 @@ else:
                                 score = sub.get("score")
                                 resubmission_count = sub.get("resubmission_count", 0)
                                 allow_view_score = sub.get("allow_view_score", False)
+                                file_paths = sub.get("file_paths", [])
                                 
                                 status_info = {
                                     'pending': ('⏳ 待批改', 'status-pending'),
@@ -2627,7 +2912,7 @@ else:
                                                         files.append(filename.strip())
                                                         st.markdown(f"- {filename}")
                                                 
-                                                if files:
+                                                if files and file_paths:
                                                     assignment_id = None
                                                     assignments = get_assignment_by_type('midterm')
                                                     for assignment in assignments:
@@ -2636,7 +2921,7 @@ else:
                                                             break
                                                     
                                                     if assignment_id:
-                                                        zip_path = download_student_files(student_username, assignment_id)
+                                                        zip_path = download_student_files(student_username, assignment_id, file_paths)
                                                         if zip_path and os.path.exists(zip_path):
                                                             with open(zip_path, "rb") as f:
                                                                 zip_data = f.read()
@@ -2650,32 +2935,28 @@ else:
                                                                 )
                                                         
                                                         st.markdown("**🔍 文件预览:**")
-                                                        assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-                                                        if os.path.exists(assignment_dir):
-                                                            for file_idx, filename in enumerate(files):
-                                                                file_path = os.path.join(assignment_dir, filename)
-                                                                if os.path.exists(file_path):
-                                                                    file_preview_col1, file_preview_col2 = st.columns([3, 1])
-                                                                    with file_preview_col1:
-                                                                        with st.expander(f"📄 {filename}", expanded=False):
-                                                                            preview_result, preview_type = preview_file(file_path)
-                                                                            if preview_result:
-                                                                                if preview_type == "image":
-                                                                                    st.image(preview_result, caption=filename)
-                                                                                elif preview_type == "text":
-                                                                                    st.code(preview_result, language='text')
-                                                                                else:
-                                                                                    st.info(preview_result)
-                                                                    with file_preview_col2:
-                                                                        with open(file_path, "rb") as f:
-                                                                            file_data = f.read()
-                                                                            st.download_button(
-                                                                                label="📥 下载",
-                                                                                data=file_data,
-                                                                                file_name=filename,
-                                                                                mime="application/octet-stream",
-                                                                                key=f"midterm_single_file_{submission_id}_{file_idx}"
-                                                                            )
+                                                        for file_idx, (filename, storage_path) in enumerate(zip(files, file_paths)):
+                                                            file_preview_col1, file_preview_col2 = st.columns([3, 1])
+                                                            with file_preview_col1:
+                                                                with st.expander(f"📄 {filename}", expanded=False):
+                                                                    preview_result, preview_type = get_file_preview_from_storage(storage_path)
+                                                                    if preview_result:
+                                                                        if preview_type == "image":
+                                                                            st.image(preview_result, caption=filename)
+                                                                        elif preview_type == "text":
+                                                                            st.code(preview_result, language='text')
+                                                                        else:
+                                                                            st.info(preview_result)
+                                                            with file_preview_col2:
+                                                                success, file_data = download_file_from_storage(BUCKET_ASSIGNMENTS, storage_path)
+                                                                if success:
+                                                                    st.download_button(
+                                                                        label="📥 下载",
+                                                                        data=file_data,
+                                                                        file_name=filename,
+                                                                        mime="application/octet-stream",
+                                                                        key=f"midterm_single_file_{submission_id}_{file_idx}"
+                                                                    )
                                         
                                         if status == 'graded' and allow_view_score and score is not None:
                                             score_color = "#10b981" if score >= 80 else "#f59e0b" if score >= 60 else "#ef4444"
@@ -2699,7 +2980,6 @@ else:
                             st.info("暂无期中作业提交记录")
                 elif st.session_state.get('role') == 'teacher':
                     st.markdown(f"**📊去教师管理进行批改和管理**")
-                        
     
     with tab3:
         st.markdown("### 🎓 期末作业提交中心")
@@ -2750,11 +3030,8 @@ else:
                                             use_container_width=True
                                         )
                                     try:
-                                        temp_dir = os.path.dirname(zip_path)
-                                        if os.path.exists(zip_path):
-                                            os.remove(zip_path)
-                                        if os.path.exists(temp_dir):
-                                            shutil.rmtree(temp_dir)
+                                        os.remove(zip_path)
+                                        shutil.rmtree(os.path.dirname(zip_path))
                                     except:
                                         pass
                                 elif error:
@@ -2813,55 +3090,12 @@ else:
                                     </div>
                                     """, unsafe_allow_html=True)
 
-                    def send_final_assignment_to_email(uploaded_files, student_name, student_id, content):
-                        MY_EMAIL = st.secrets["EMAIL"]["address"]
-                        MY_PWD = st.secrets["EMAIL"]["password"]
-                        SMTP_SERVER = "smtp.qq.com"
-                        SMTP_PORT = 465
-
-                        msg = MIMEMultipart()
-                        msg['From'] = formataddr(("期末作业提交系统", MY_EMAIL))
-                        msg['To'] = MY_EMAIL
-                        msg['Subject'] = f"[{student_id}] {student_name} - 期末作业提交"
-
-                        text_content = f"""
-                                学生姓名：{student_name}
-                                学生学号：{student_id}
-                                项目报告内容：
-                                {content}
-                                """
-                        msg.attach(MIMEText(text_content, 'plain', 'utf-8'))
-
-                        if uploaded_files:
-                            for file in uploaded_files:
-                                part = MIMEBase('application', 'octet-stream')
-                                part.set_payload(file.getbuffer())
-                                encoders.encode_base64(part)
-                                part.add_header('Content-Disposition',
-                                                f'attachment; filename="{file.name}"')
-                                msg.attach(part)
-
-                        try:
-                            server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
-                            server.login(MY_EMAIL, MY_PWD)
-                            server.sendmail(MY_EMAIL, [MY_EMAIL], msg.as_string())
-                            server.quit()
-                            return True
-                        except Exception as e:
-                            st.error(f"邮件发送失败：{str(e)}")
-                            return False
-
                     col1, col2 = st.columns([1, 2])
                     with col1:
                         if st.button("🎓 提交期末作业", key="submit_final", use_container_width=True,
                                      type="primary"):
                             if content.strip():
-                                with st.spinner("正在发送作业到管理端邮箱..."):
-                                    email_success = send_final_assignment_to_email(uploaded_files,
-                                                                                   student_name, student_id,
-                                                                                   content)
-
-                                if email_success:
+                                with st.spinner("正在提交作业..."):
                                     success, message, submission_id = submit_assignment(
                                         st.session_state.username,
                                         student_name,
@@ -2887,13 +3121,11 @@ else:
 
                                         st.balloons()
                                         st.snow()
-                                        st.success("✅ 期末作业提交成功！文件已发送至管理端邮箱")
+                                        st.success("✅ 期末作业提交成功！")
                                         time.sleep(2)
                                         st.rerun()
                                     else:
                                         st.error(message)
-                                else:
-                                    st.error("❌ 作业提交失败，请检查网络或联系管理员")
                             else:
                                 st.error("请填写项目报告内容")
 
@@ -2918,6 +3150,7 @@ else:
                                 score = sub.get("score")
                                 resubmission_count = sub.get("resubmission_count", 0)
                                 allow_view_score = sub.get("allow_view_score", False)
+                                file_paths = sub.get("file_paths", [])
                                 
                                 status_info = {
                                     'pending': ('⏳ 待评审', 'status-pending'),
@@ -2944,7 +3177,7 @@ else:
                                                         files.append(filename.strip())
                                                         st.markdown(f"- {filename}")
                                                 
-                                                if files:
+                                                if files and file_paths:
                                                     assignment_id = None
                                                     assignments = get_assignment_by_type('final')
                                                     for assignment in assignments:
@@ -2953,7 +3186,7 @@ else:
                                                             break
                                                     
                                                     if assignment_id:
-                                                        zip_path = download_student_files(student_username, assignment_id)
+                                                        zip_path = download_student_files(student_username, assignment_id, file_paths)
                                                         if zip_path and os.path.exists(zip_path):
                                                             with open(zip_path, "rb") as f:
                                                                 zip_data = f.read()
@@ -2967,32 +3200,28 @@ else:
                                                                 )
                                                         
                                                         st.markdown("**🔍 文件预览:**")
-                                                        assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-                                                        if os.path.exists(assignment_dir):
-                                                            for file_idx, filename in enumerate(files):
-                                                                file_path = os.path.join(assignment_dir, filename)
-                                                                if os.path.exists(file_path):
-                                                                    file_preview_col1, file_preview_col2 = st.columns([3, 1])
-                                                                    with file_preview_col1:
-                                                                        with st.expander(f"📄 {filename}", expanded=False):
-                                                                            preview_result, preview_type = preview_file(file_path)
-                                                                            if preview_result:
-                                                                                if preview_type == "image":
-                                                                                    st.image(preview_result, caption=filename)
-                                                                                elif preview_type == "text":
-                                                                                    st.code(preview_result, language='text')
-                                                                                else:
-                                                                                    st.info(preview_result)
-                                                                    with file_preview_col2:
-                                                                        with open(file_path, "rb") as f:
-                                                                            file_data = f.read()
-                                                                            st.download_button(
-                                                                                label="📥 下载",
-                                                                                data=file_data,
-                                                                                file_name=filename,
-                                                                                mime="application/octet-stream",
-                                                                                key=f"final_single_file_{submission_id}_{file_idx}"
-                                                                            )
+                                                        for file_idx, (filename, storage_path) in enumerate(zip(files, file_paths)):
+                                                            file_preview_col1, file_preview_col2 = st.columns([3, 1])
+                                                            with file_preview_col1:
+                                                                with st.expander(f"📄 {filename}", expanded=False):
+                                                                    preview_result, preview_type = get_file_preview_from_storage(storage_path)
+                                                                    if preview_result:
+                                                                        if preview_type == "image":
+                                                                            st.image(preview_result, caption=filename)
+                                                                        elif preview_type == "text":
+                                                                            st.code(preview_result, language='text')
+                                                                        else:
+                                                                            st.info(preview_result)
+                                                            with file_preview_col2:
+                                                                success, file_data = download_file_from_storage(BUCKET_ASSIGNMENTS, storage_path)
+                                                                if success:
+                                                                    st.download_button(
+                                                                        label="📥 下载",
+                                                                        data=file_data,
+                                                                        file_name=filename,
+                                                                        mime="application/octet-stream",
+                                                                        key=f"final_single_file_{submission_id}_{file_idx}"
+                                                                    )
                                         
                                         if status == 'graded' and allow_view_score and score is not None:
                                             score_color = "#10b981" if score >= 80 else "#f59e0b" if score >= 60 else "#ef4444"
@@ -3124,11 +3353,8 @@ else:
                                                     use_container_width=True
                                                 )
                                             try:
-                                                temp_dir = os.path.dirname(zip_path)
-                                                if os.path.exists(zip_path):
-                                                    os.remove(zip_path)
-                                                if os.path.exists(temp_dir):
-                                                    shutil.rmtree(temp_dir)
+                                                os.remove(zip_path)
+                                                shutil.rmtree(os.path.dirname(zip_path))
                                             except:
                                                 pass
                                         elif error:
@@ -3184,6 +3410,7 @@ else:
                         score = sub.get("score")
                         resubmission_count = sub.get("resubmission_count", 0)
                         allow_view_score = sub.get("allow_view_score", False)
+                        file_paths = sub.get("file_paths", [])
                         
                         status_info = {
                             'pending': ('⏳ 待批改', 'status-pending'),
@@ -3213,10 +3440,10 @@ else:
                                                 files.append(filename.strip())
                                                 st.markdown(f"- {filename}")
                                         
-                                        if files:
+                                        if files and file_paths:
                                             assignment_id = get_assignment_id_by_type_and_number('experiment', experiment_number)
                                             if assignment_id:
-                                                zip_path = download_student_files(student_username, assignment_id)
+                                                zip_path = download_student_files(student_username, assignment_id, file_paths)
                                                 if zip_path and os.path.exists(zip_path):
                                                     with open(zip_path, "rb") as f:
                                                         zip_data = f.read()
@@ -3230,32 +3457,28 @@ else:
                                                         )
                                                 
                                                 st.markdown("**🔍 文件预览:**")
-                                                assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-                                                if os.path.exists(assignment_dir):
-                                                    for file_idx, filename in enumerate(files):
-                                                        file_path = os.path.join(assignment_dir, filename)
-                                                        if os.path.exists(file_path):
-                                                            file_preview_col1, file_preview_col2 = st.columns([3, 1])
-                                                            with file_preview_col1:
-                                                                with st.expander(f"📄 {filename}", expanded=False):
-                                                                    preview_result, preview_type = preview_file(file_path)
-                                                                    if preview_result:
-                                                                        if preview_type == "image":
-                                                                            st.image(preview_result, caption=filename)
-                                                                        elif preview_type == "text":
-                                                                            st.code(preview_result, language='python' if filename.endswith('.py') else 'text')
-                                                                        else:
-                                                                            st.info(preview_result)
-                                                            with file_preview_col2:
-                                                                with open(file_path, "rb") as f:
-                                                                    file_data = f.read()
-                                                                    st.download_button(
-                                                                        label="📥 单独下载",
-                                                                        data=file_data,
-                                                                        file_name=filename,
-                                                                        mime="application/octet-stream",
-                                                                        key=f"teacher_tab_single_file_{submission_id}_{experiment_number}_{student_username}_{file_idx}"
-                                                                    )
+                                                for file_idx, (filename, storage_path) in enumerate(zip(files, file_paths)):
+                                                    file_preview_col1, file_preview_col2 = st.columns([3, 1])
+                                                    with file_preview_col1:
+                                                        with st.expander(f"📄 {filename}", expanded=False):
+                                                            preview_result, preview_type = get_file_preview_from_storage(storage_path)
+                                                            if preview_result:
+                                                                if preview_type == "image":
+                                                                    st.image(preview_result, caption=filename)
+                                                                elif preview_type == "text":
+                                                                    st.code(preview_result, language='python' if filename.endswith('.py') else 'text')
+                                                                else:
+                                                                    st.info(preview_result)
+                                                    with file_preview_col2:
+                                                        success, file_data = download_file_from_storage(BUCKET_ASSIGNMENTS, storage_path)
+                                                        if success:
+                                                            st.download_button(
+                                                                label="📥 单独下载",
+                                                                data=file_data,
+                                                                file_name=filename,
+                                                                mime="application/octet-stream",
+                                                                key=f"teacher_tab_single_file_{submission_id}_{experiment_number}_{student_username}_{file_idx}"
+                                                            )
                                 
                                 if status == 'graded' and score is not None:
                                     st.markdown(f"""
@@ -3402,11 +3625,8 @@ else:
                                                     use_container_width=True
                                                 )
                                             try:
-                                                temp_dir = os.path.dirname(zip_path)
-                                                if os.path.exists(zip_path):
-                                                    os.remove(zip_path)
-                                                if os.path.exists(temp_dir):
-                                                    shutil.rmtree(temp_dir)
+                                                os.remove(zip_path)
+                                                shutil.rmtree(os.path.dirname(zip_path))
                                             except:
                                                 pass
                                         elif error:
@@ -3444,6 +3664,7 @@ else:
                         score = sub.get("score")
                         resubmission_count = sub.get("resubmission_count", 0)
                         allow_view_score = sub.get("allow_view_score", False)
+                        file_paths = sub.get("file_paths", [])
                         
                         status_info = {
                             'pending': ('⏳ 待批改', 'status-pending'),
@@ -3473,10 +3694,10 @@ else:
                                                 files.append(filename.strip())
                                                 st.markdown(f"- {filename}")
                                         
-                                        if files:
+                                        if files and file_paths:
                                             assignment_id = get_assignment_id_by_type_and_number('midterm', 1)
                                             if assignment_id:
-                                                zip_path = download_student_files(student_username, assignment_id)
+                                                zip_path = download_student_files(student_username, assignment_id, file_paths)
                                                 if zip_path and os.path.exists(zip_path):
                                                     with open(zip_path, "rb") as f:
                                                         zip_data = f.read()
@@ -3490,32 +3711,28 @@ else:
                                                         )
                                                 
                                                 st.markdown("**🔍 文件预览:**")
-                                                assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-                                                if os.path.exists(assignment_dir):
-                                                    for file_idx, filename in enumerate(files):
-                                                        file_path = os.path.join(assignment_dir, filename)
-                                                        if os.path.exists(file_path):
-                                                            file_preview_col1, file_preview_col2 = st.columns([3, 1])
-                                                            with file_preview_col1:
-                                                                with st.expander(f"📄 {filename}", expanded=False):
-                                                                    preview_result, preview_type = preview_file(file_path)
-                                                                    if preview_result:
-                                                                        if preview_type == "image":
-                                                                            st.image(preview_result, caption=filename)
-                                                                        elif preview_type == "text":
-                                                                            st.code(preview_result, language='text')
-                                                                        else:
-                                                                            st.info(preview_result)
-                                                            with file_preview_col2:
-                                                                with open(file_path, "rb") as f:
-                                                                    file_data = f.read()
-                                                                    st.download_button(
-                                                                        label="📥 单独下载",
-                                                                        data=file_data,
-                                                                        file_name=filename,
-                                                                        mime="application/octet-stream",
-                                                                        key=f"teacher_midterm_single_file_{submission_id}_{student_username}_{file_idx}"
-                                                                    )
+                                                for file_idx, (filename, storage_path) in enumerate(zip(files, file_paths)):
+                                                    file_preview_col1, file_preview_col2 = st.columns([3, 1])
+                                                    with file_preview_col1:
+                                                        with st.expander(f"📄 {filename}", expanded=False):
+                                                            preview_result, preview_type = get_file_preview_from_storage(storage_path)
+                                                            if preview_result:
+                                                                if preview_type == "image":
+                                                                    st.image(preview_result, caption=filename)
+                                                                elif preview_type == "text":
+                                                                    st.code(preview_result, language='text')
+                                                                else:
+                                                                    st.info(preview_result)
+                                                    with file_preview_col2:
+                                                        success, file_data = download_file_from_storage(BUCKET_ASSIGNMENTS, storage_path)
+                                                        if success:
+                                                            st.download_button(
+                                                                label="📥 单独下载",
+                                                                data=file_data,
+                                                                file_name=filename,
+                                                                mime="application/octet-stream",
+                                                                key=f"teacher_midterm_single_file_{submission_id}_{student_username}_{file_idx}"
+                                                            )
                                 
                                 if status == 'graded' and score is not None:
                                     st.markdown(f"""
@@ -3662,11 +3879,8 @@ else:
                                                     use_container_width=True
                                                 )
                                             try:
-                                                temp_dir = os.path.dirname(zip_path)
-                                                if os.path.exists(zip_path):
-                                                    os.remove(zip_path)
-                                                if os.path.exists(temp_dir):
-                                                    shutil.rmtree(temp_dir)
+                                                os.remove(zip_path)
+                                                shutil.rmtree(os.path.dirname(zip_path))
                                             except:
                                                 pass
                                         elif error:
@@ -3704,6 +3918,7 @@ else:
                         score = sub.get("score")
                         resubmission_count = sub.get("resubmission_count", 0)
                         allow_view_score = sub.get("allow_view_score", False)
+                        file_paths = sub.get("file_paths", [])
                         
                         status_info = {
                             'pending': ('⏳ 待评审', 'status-pending'),
@@ -3733,10 +3948,10 @@ else:
                                                 files.append(filename.strip())
                                                 st.markdown(f"- {filename}")
                                         
-                                        if files:
+                                        if files and file_paths:
                                             assignment_id = get_assignment_id_by_type_and_number('final', 1)
                                             if assignment_id:
-                                                zip_path = download_student_files(student_username, assignment_id)
+                                                zip_path = download_student_files(student_username, assignment_id, file_paths)
                                                 if zip_path and os.path.exists(zip_path):
                                                     with open(zip_path, "rb") as f:
                                                         zip_data = f.read()
@@ -3750,32 +3965,28 @@ else:
                                                         )
                                                 
                                                 st.markdown("**🔍 文件预览:**")
-                                                assignment_dir = os.path.join(UPLOAD_DIR, student_username, str(assignment_id))
-                                                if os.path.exists(assignment_dir):
-                                                    for file_idx, filename in enumerate(files):
-                                                        file_path = os.path.join(assignment_dir, filename)
-                                                        if os.path.exists(file_path):
-                                                            file_preview_col1, file_preview_col2 = st.columns([3, 1])
-                                                            with file_preview_col1:
-                                                                with st.expander(f"📄 {filename}", expanded=False):
-                                                                    preview_result, preview_type = preview_file(file_path)
-                                                                    if preview_result:
-                                                                        if preview_type == "image":
-                                                                            st.image(preview_result, caption=filename)
-                                                                        elif preview_type == "text":
-                                                                            st.code(preview_result, language='text')
-                                                                        else:
-                                                                            st.info(preview_result)
-                                                            with file_preview_col2:
-                                                                with open(file_path, "rb") as f:
-                                                                    file_data = f.read()
-                                                                    st.download_button(
-                                                                        label="📥 单独下载",
-                                                                        data=file_data,
-                                                                        file_name=filename,
-                                                                        mime="application/octet-stream",
-                                                                        key=f"teacher_final_single_file_{submission_id}_{student_username}_{file_idx}"
-                                                                    )
+                                                for file_idx, (filename, storage_path) in enumerate(zip(files, file_paths)):
+                                                    file_preview_col1, file_preview_col2 = st.columns([3, 1])
+                                                    with file_preview_col1:
+                                                        with st.expander(f"📄 {filename}", expanded=False):
+                                                            preview_result, preview_type = get_file_preview_from_storage(storage_path)
+                                                            if preview_result:
+                                                                if preview_type == "image":
+                                                                    st.image(preview_result, caption=filename)
+                                                                elif preview_type == "text":
+                                                                    st.code(preview_result, language='text')
+                                                                else:
+                                                                    st.info(preview_result)
+                                                    with file_preview_col2:
+                                                        success, file_data = download_file_from_storage(BUCKET_ASSIGNMENTS, storage_path)
+                                                        if success:
+                                                            st.download_button(
+                                                                label="📥 单独下载",
+                                                                data=file_data,
+                                                                file_name=filename,
+                                                                mime="application/octet-stream",
+                                                                key=f"teacher_final_single_file_{submission_id}_{student_username}_{file_idx}"
+                                                            )
                                 
                                 if status == 'graded' and score is not None:
                                     st.markdown(f"""
